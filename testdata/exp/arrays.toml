@@ -1,0 +1,6 @@
+fruits = ["apple", "banana", "cherry"]
+
+[settings]
+retries = 3
+timeout = 30
+verbose = false
