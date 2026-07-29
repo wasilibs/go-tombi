@@ -1,12 +1,12 @@
 FROM rust:1-slim
 
 RUN apt-get update && apt-get install -y binaryen curl git
-RUN rustup target add wasm32-wasip1-threads
 ADD buildtools/wasm/version.txt version.txt
 ADD buildtools/wasm/patch.txt patch.txt
 
 RUN mkdir -p /workspace && curl -L https://github.com/tombi-toml/tombi/archive/refs/tags/$(cat version.txt | awk '{$1=$1};1').tar.gz | tar -xz --strip-components 1 -C /workspace
 WORKDIR /workspace
+RUN rustup target add wasm32-wasip1-threads
 
 RUN git apply /patch.txt
 
