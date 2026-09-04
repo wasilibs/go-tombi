@@ -1,220 +1,309 @@
-diff --git a/crates/tombi-cache/Cargo.toml b/crates/tombi-cache/Cargo.toml
-index 646e78d4a..4828a4061 100644
---- a/crates/tombi-cache/Cargo.toml
-+++ b/crates/tombi-cache/Cargo.toml
-@@ -7,12 +7,17 @@ repository.workspace = true
- license.workspace = true
+diff --git a/crates/tombi-fs/src/lib.rs b/crates/tombi-fs/src/lib.rs
+index 4b70cdb4a..9d38f6917 100644
+--- a/crates/tombi-fs/src/lib.rs
++++ b/crates/tombi-fs/src/lib.rs
+@@ -61,10 +61,10 @@ pub fn normalize(path: &Path) -> PathBuf {
+     normalized
+ }
  
- [dependencies]
--dirs.workspace = true
- log.workspace = true
- thiserror.workspace = true
--tokio = { workspace = true, features = ["fs"] }
- tombi-uri.workspace = true
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+ pub fn set_file(_path: impl Into<PathBuf>, _text: impl Into<String>) {}
  
-+# tokio's `fs` feature is unavailable on wasm, where we fall back to std::fs.
-+# `dirs` likewise has no wasm implementation; the cache directory is resolved
-+# from environment variables there.
-+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-+dirs.workspace = true
-+tokio = { workspace = true, features = ["fs"] }
-+
- [dev-dependencies]
- tempfile.workspace = true
- tokio = { workspace = true, features = ["macros", "rt"] }
-diff --git a/crates/tombi-cache/src/lib.rs b/crates/tombi-cache/src/lib.rs
-index 50241f730..89629fd7e 100644
---- a/crates/tombi-cache/src/lib.rs
-+++ b/crates/tombi-cache/src/lib.rs
-@@ -4,6 +4,33 @@ pub use error::Error;
- pub use options::{DEFAULT_CACHE_TTL, Options};
- pub const CACHE_INDEX_FILE_NAME: &str = "__index__.json";
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ pub fn set_file(path: impl Into<PathBuf>, text: impl Into<String>) {
+     let path = normalize(&path.into());
+     if let Some(parent) = path.parent() {
+@@ -76,12 +76,12 @@ pub fn set_file(path: impl Into<PathBuf>, text: impl Into<String>) {
+         .insert(path, text.into());
+ }
  
-+// tokio's `fs` module is not available on wasm, so the cache falls back to the
-+// blocking `std::fs` API there. Wrapping it in async fns keeps the call sites
-+// identical across targets.
-+#[cfg(not(target_arch = "wasm32"))]
-+use tokio::fs as cache_fs;
-+
-+#[cfg(target_arch = "wasm32")]
-+mod cache_fs {
-+    use std::path::Path;
-+
-+    pub async fn metadata(path: impl AsRef<Path>) -> std::io::Result<std::fs::Metadata> {
-+        std::fs::metadata(path)
-+    }
-+
-+    pub async fn read_to_string(path: impl AsRef<Path>) -> std::io::Result<String> {
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+ pub fn create_dir_all(path: &Path) -> std::io::Result<()> {
+     std::fs::create_dir_all(path)
+ }
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ pub fn create_dir_all(path: &Path) -> std::io::Result<()> {
+     let mut directories = directories()
+         .write()
+@@ -97,10 +97,10 @@ pub fn create_dir_all(path: &Path) -> std::io::Result<()> {
+     Ok(())
+ }
+ 
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+ pub fn remove_file(_path: &Path) {}
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ pub fn remove_file(path: &Path) {
+     files()
+         .write()
+@@ -108,10 +108,10 @@ pub fn remove_file(path: &Path) {
+         .remove(&normalize(path));
+ }
+ 
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+ pub fn clear() {}
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ pub fn clear() {
+     files()
+         .write()
+@@ -123,12 +123,12 @@ pub fn clear() {
+         .clear();
+ }
+ 
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+ pub fn read_to_string(path: &Path) -> std::io::Result<String> {
+     std::fs::read_to_string(path)
+ }
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ pub fn read_to_string(path: &Path) -> std::io::Result<String> {
+     files()
+         .read()
+@@ -143,18 +143,22 @@ pub async fn read_to_string_async(path: &Path) -> std::io::Result<String> {
+     {
+         tokio::fs::read_to_string(path).await
+     }
+-    #[cfg(target_family = "wasm")]
++    #[cfg(target_os = "wasi")]
++    {
 +        std::fs::read_to_string(path)
 +    }
-+
-+    pub async fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
-+        std::fs::write(path, contents)
-+    }
-+
-+    pub async fn create_dir_all(path: impl AsRef<Path>) -> std::io::Result<()> {
-+        std::fs::create_dir_all(path)
-+    }
-+}
-+
- pub async fn get_tombi_cache_dir_path() -> Option<std::path::PathBuf> {
-     if let Some(tombi_cache_home) = std::env::var_os("TOMBI_CACHE_HOME") {
-         return ensure_cache_dir(std::path::PathBuf::from(tombi_cache_home)).await;
-@@ -16,6 +43,7 @@ pub async fn get_tombi_cache_dir_path() -> Option<std::path::PathBuf> {
-         return ensure_cache_dir(cache_dir_path).await;
-     }
- 
-+    #[cfg(not(target_arch = "wasm32"))]
-     if let Some(home_dir) = dirs::home_dir() {
-         let mut cache_dir_path = home_dir;
-         cache_dir_path.push(".cache");
-@@ -65,7 +93,7 @@ pub async fn read_from_cache(
-             .map(|opts| opts.cache_ttl)
-             .unwrap_or_else(|| Options::default().cache_ttl);
-         if let Some(ttl) = cache_ttl {
--            let Ok(metadata) = tokio::fs::metadata(cache_file_path).await else {
-+            let Ok(metadata) = cache_fs::metadata(cache_file_path).await else {
-                 return Ok(None);
-             };
-             if let Ok(modified) = metadata.modified()
-@@ -76,7 +104,7 @@ pub async fn read_from_cache(
-             }
-         }
-         return Ok(Some(
--            tokio::fs::read_to_string(&cache_file_path)
-+            cache_fs::read_to_string(&cache_file_path)
-                 .await
-                 .map_err(|err| crate::Error::CacheFileReadFailed {
-                     cache_file_path: cache_file_path.to_path_buf(),
-@@ -100,14 +128,14 @@ pub async fn save_to_cache(
-                 });
-             };
- 
--            if let Err(err) = tokio::fs::create_dir_all(cache_dir_path).await {
-+            if let Err(err) = cache_fs::create_dir_all(cache_dir_path).await {
-                 return Err(crate::Error::CacheFileSaveFailed {
-                     cache_file_path: cache_file_path.to_owned(),
-                     reason: err.to_string(),
-                 });
-             }
-         }
--        if let Err(err) = tokio::fs::write(cache_file_path, &bytes).await {
-+        if let Err(err) = cache_fs::write(cache_file_path, &bytes).await {
-             return Err(crate::Error::CacheFileSaveFailed {
-                 cache_file_path: cache_file_path.to_owned(),
-                 reason: err.to_string(),
-@@ -121,6 +149,7 @@ pub async fn save_to_cache(
- pub async fn refresh_cache() -> Result<bool, crate::Error> {
-     if let Some(cache_dir_path) = get_tombi_cache_dir_path().await {
-         // Remove all contents of the cache directory but keep the directory itself
-+        #[cfg(not(target_arch = "wasm32"))]
-         if let Ok(mut entries) = tokio::fs::read_dir(&cache_dir_path).await {
-             while let Ok(Some(entry)) = entries.next_entry().await {
-                 if let Ok(file_type) = entry.file_type().await
-@@ -136,6 +165,20 @@ pub async fn refresh_cache() -> Result<bool, crate::Error> {
-                 }
-             }
-         }
-+        #[cfg(target_arch = "wasm32")]
-+        if let Ok(entries) = std::fs::read_dir(&cache_dir_path) {
-+            for entry in entries.flatten() {
-+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-+                    let path = entry.path();
-+                    if let Err(err) = std::fs::remove_dir_all(&path) {
-+                        return Err(crate::Error::CacheDirectoryRemoveFailed {
-+                            cache_dir_path: path,
-+                            reason: err.to_string(),
-+                        });
-+                    }
-+                }
-+            }
-+        }
-         return Ok(true);
-     }
- 
-@@ -143,7 +186,7 @@ pub async fn refresh_cache() -> Result<bool, crate::Error> {
- }
- 
- async fn ensure_cache_dir(cache_dir_path: std::path::PathBuf) -> Option<std::path::PathBuf> {
--    if let Err(error) = tokio::fs::create_dir_all(&cache_dir_path).await {
-+    if let Err(error) = cache_fs::create_dir_all(&cache_dir_path).await {
-         log::warn!("Failed to create cache directory: {error}");
-         return None;
-     }
-diff --git a/crates/tombi-diagnostic/Cargo.toml b/crates/tombi-diagnostic/Cargo.toml
-index 843bfd0aa..e6c984f8b 100644
---- a/crates/tombi-diagnostic/Cargo.toml
-+++ b/crates/tombi-diagnostic/Cargo.toml
-@@ -9,9 +9,14 @@ license.workspace = true
- nu-ansi-term.workspace = true
- serde.workspace = true
- tombi-text.workspace = true
--tower-lsp = { workspace = true, optional = true }
- wasm-bindgen = { workspace = true, optional = true }
- 
-+# tower-lsp drags in tokio's networking stack, which does not build on wasm.
-+# The `lsp` feature stays enabled via workspace defaults, but the dependency
-+# and the conversion that uses it are off-wasm only.
-+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-+tower-lsp = { workspace = true, optional = true }
-+
- [dev-dependencies]
- clap.workspace = true
- env_logger.workspace = true
-diff --git a/crates/tombi-diagnostic/src/lib.rs b/crates/tombi-diagnostic/src/lib.rs
-index 084ec8cf8..3cf7db427 100644
---- a/crates/tombi-diagnostic/src/lib.rs
-+++ b/crates/tombi-diagnostic/src/lib.rs
-@@ -123,7 +123,8 @@ impl<T: SetDiagnostics> SetDiagnostics for Vec<T> {
++    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+     {
+         read_to_string(path)
      }
  }
  
--#[cfg(feature = "lsp")]
-+// tower-lsp is unavailable on wasm; the LSP conversion is off-wasm only.
-+#[cfg(all(feature = "lsp", not(target_arch = "wasm32")))]
- impl tombi_text::FromLsp<Diagnostic> for tower_lsp::lsp_types::Diagnostic {
-     fn from_lsp(
-         source: Diagnostic,
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+ pub fn is_file(path: &Path) -> bool {
+     path.is_file()
+ }
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ pub fn is_file(path: &Path) -> bool {
+     files()
+         .read()
+@@ -162,12 +166,12 @@ pub fn is_file(path: &Path) -> bool {
+         .contains_key(&normalize(path))
+ }
+ 
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+ pub fn is_dir(path: &Path) -> bool {
+     path.is_dir()
+ }
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ pub fn is_dir(path: &Path) -> bool {
+     let path = normalize(path);
+     if directories()
+@@ -184,12 +188,12 @@ pub fn is_dir(path: &Path) -> bool {
+         .any(|candidate| candidate.starts_with(&path) && candidate != &path)
+ }
+ 
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+ pub fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+     path.canonicalize()
+ }
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ pub fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+     let path = normalize(path);
+     (is_file(&path) || is_dir(&path))
+@@ -214,7 +218,7 @@ where
+     }
+ }
+ 
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+ pub fn file_version(path: &Path) -> Option<u64> {
+     use std::time::UNIX_EPOCH;
+ 
+@@ -225,7 +229,7 @@ pub fn file_version(path: &Path) -> Option<u64> {
+     Some(modified_millis ^ metadata.len().wrapping_mul(0x9E37_79B1_85EB_CA87))
+ }
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ pub fn file_version(path: &Path) -> Option<u64> {
+     use std::hash::{Hash, Hasher};
+ 
+@@ -236,12 +240,12 @@ pub fn file_version(path: &Path) -> Option<u64> {
+     Some(hasher.finish())
+ }
+ 
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+ pub fn glob(pattern: &str) -> Result<Vec<PathBuf>, glob::PatternError> {
+     Ok(glob::glob(pattern)?.filter_map(Result::ok).collect())
+ }
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ pub fn glob(pattern: &str) -> Result<Vec<PathBuf>, glob::PatternError> {
+     let pattern = glob::Pattern::new(pattern)?;
+     let files = files().read().unwrap_or_else(|error| error.into_inner());
+@@ -260,7 +264,7 @@ pub fn glob(pattern: &str) -> Result<Vec<PathBuf>, glob::PatternError> {
+         .collect())
+ }
+ 
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+ pub fn read_dir(path: &Path) -> std::io::Result<Vec<DirEntry>> {
+     std::fs::read_dir(path)?
+         .map(|entry| {
+@@ -273,7 +277,7 @@ pub fn read_dir(path: &Path) -> std::io::Result<Vec<DirEntry>> {
+         .collect()
+ }
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ pub fn read_dir(path: &Path) -> std::io::Result<Vec<DirEntry>> {
+     let path = normalize(path);
+     let files = files().read().unwrap_or_else(|error| error.into_inner());
+@@ -319,7 +323,7 @@ pub fn read_dir(path: &Path) -> std::io::Result<Vec<DirEntry>> {
+         .collect())
+ }
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ fn files() -> &'static std::sync::RwLock<std::collections::HashMap<PathBuf, String>> {
+     static FILES: std::sync::OnceLock<
+         std::sync::RwLock<std::collections::HashMap<PathBuf, String>>,
+@@ -327,7 +331,7 @@ fn files() -> &'static std::sync::RwLock<std::collections::HashMap<PathBuf, Stri
+     FILES.get_or_init(Default::default)
+ }
+ 
+-#[cfg(target_family = "wasm")]
++#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+ fn directories() -> &'static std::sync::RwLock<std::collections::HashSet<PathBuf>> {
+     static DIRECTORIES: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<PathBuf>>> =
+         std::sync::OnceLock::new();
+diff --git a/crates/tombi-future/Cargo.toml b/crates/tombi-future/Cargo.toml
+index c74ce15ff..a8a7eb92a 100644
+--- a/crates/tombi-future/Cargo.toml
++++ b/crates/tombi-future/Cargo.toml
+@@ -10,7 +10,7 @@ license.workspace = true
+ futures.workspace = true
+ send_wrapper = { workspace = true, optional = true }
+ 
+-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
++[target.'cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))'.dependencies]
+ tokio = { workspace = true, features = ["rt"] }
+ 
+ [target.'cfg(target_arch = "wasm32")'.dependencies]
+diff --git a/crates/tombi-future/src/lib.rs b/crates/tombi-future/src/lib.rs
+index 8cc5c30cf..452febd78 100644
+--- a/crates/tombi-future/src/lib.rs
++++ b/crates/tombi-future/src/lib.rs
+@@ -1,9 +1,21 @@
+-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
++#[cfg(all(
++    feature = "native",
++    any(not(target_arch = "wasm32"), target_os = "wasi")
++))]
+ mod on_native;
+-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
++#[cfg(all(
++    feature = "native",
++    any(not(target_arch = "wasm32"), target_os = "wasi")
++))]
+ pub use on_native::*;
+ 
+-#[cfg(any(not(feature = "native"), target_arch = "wasm32"))]
++#[cfg(any(
++    not(feature = "native"),
++    all(target_arch = "wasm32", not(target_os = "wasi"))
++))]
+ mod on_wasm;
+-#[cfg(any(not(feature = "native"), target_arch = "wasm32"))]
++#[cfg(any(
++    not(feature = "native"),
++    all(target_arch = "wasm32", not(target_os = "wasi"))
++))]
+ pub use on_wasm::*;
 diff --git a/crates/tombi-glob/src/walk_dir.rs b/crates/tombi-glob/src/walk_dir.rs
-index 94db667a6..3112373c5 100644
+index d02ee9df0..da220f9d7 100644
 --- a/crates/tombi-glob/src/walk_dir.rs
 +++ b/crates/tombi-glob/src/walk_dir.rs
-@@ -1,5 +1,6 @@
+@@ -1,4 +1,4 @@
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
  use ignore::WalkBuilder;
  use std::path::{Path, PathBuf};
-+#[cfg(not(target_arch = "wasm32"))]
- use std::sync::{Arc, Mutex};
+ #[cfg(not(target_family = "wasm"))]
+@@ -43,7 +43,7 @@ impl WalkDir {
+     }
  
- use tombi_config::FilesOptions;
-@@ -46,10 +47,8 @@ impl WalkDir {
-             });
+     /// Walk the directory asynchronously and return matching file paths.
+-    #[cfg(not(target_family = "wasm"))]
++    #[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+     pub async fn walk(self) -> Result<Vec<PathBuf>, crate::Error> {
+         let root_path = &self.root;
+ 
+@@ -62,8 +62,6 @@ impl WalkDir {
+             return Ok(Vec::new());
          }
  
 -        let results = Arc::new(Mutex::new(Vec::new()));
 -
--        let mut builder = WalkBuilder::new(root_path);
+         let mut builder = WalkBuilder::new(root_path);
          let respect_ignore_files = self.options.respect_ignore_files.value();
-+        let mut builder = WalkBuilder::new(root_path);
          builder
-             .hidden(false)
-             .follow_links(false)
-@@ -57,61 +56,97 @@ impl WalkDir {
-             .ignore(respect_ignore_files)
-             .git_ignore(respect_ignore_files)
-             .git_exclude(respect_ignore_files)
--            .git_global(false)
+@@ -79,65 +77,98 @@ impl WalkDir {
+                     .file_type()
+                     .is_some_and(|file_type| file_type.is_dir())
+                     || !is_vcs_metadata_dir(entry.path())
+-            })
 -            .threads(rayon::current_num_threads());
-+            .git_global(false);
++            });
  
 -        builder.build_parallel().run(|| {
 -            let results_clone = Arc::clone(&results);
-+        // The `ignore` crate's parallel walker spawns OS worker threads, which
-+        // do not run under wasm; walk sequentially there instead.
-+        #[cfg(target_arch = "wasm32")]
++        #[cfg(target_os = "wasi")]
 +        {
              let include_patterns = self.options.include.clone().unwrap_or_default();
              let exclude_patterns = self.options.exclude.clone().unwrap_or_default();
 -            let root_path = root_path.to_path_buf();
++            let mut results = Vec::new();
++
++            for entry in builder.build().flatten() {
++                if let Some(file_type) = entry.file_type()
++                    && file_type.is_file()
++                {
++                    let path = entry.path();
++                    let path_for_patterns = crate::pattern::path_for_patterns(path, root_path);
++                    let should_include = include_patterns.is_empty()
++                        || crate::pattern::matches_any_pattern(
++                            path_for_patterns.as_ref(),
++                            &include_patterns,
++                        );
++                    let should_exclude = crate::pattern::matches_any_pattern(
++                        path_for_patterns.as_ref(),
++                        &exclude_patterns,
++                    );
++                    if should_include && !should_exclude {
++                        results.push(path.to_path_buf());
++                    }
++                }
++            }
  
 -            Box::new(move |entry_result| {
 -                match entry_result {
@@ -244,35 +333,14 @@ index 94db667a6..3112373c5 100644
 -                                    && let Ok(mut results_guard) = results_clone.lock()
 -                                {
 -                                    results_guard.push(path.to_path_buf());
-+            let mut results = Vec::new();
-+            for entry in builder.build().flatten() {
-+                if let Some(file_type) = entry.file_type()
-+                    && file_type.is_file()
-+                {
-+                    let path = entry.path();
-+                    let path_for_patterns = crate::pattern::path_for_patterns(path, root_path);
-+                    let should_include = include_patterns.is_empty()
-+                        || crate::pattern::matches_any_pattern(
-+                            path_for_patterns.as_ref(),
-+                            &include_patterns,
-+                        );
-+                    let should_exclude = crate::pattern::matches_any_pattern(
-+                        path_for_patterns.as_ref(),
-+                        &exclude_patterns,
-+                    );
-+                    if should_include && !should_exclude {
-+                        results.push(path.to_path_buf());
-+                    }
-+                }
-+            }
 +            Ok(results)
 +        }
 +
-+        #[cfg(not(target_arch = "wasm32"))]
++        #[cfg(not(target_family = "wasm"))]
 +        {
 +            builder.threads(rayon::current_num_threads());
-+
 +            let results = Arc::new(Mutex::new(Vec::new()));
++
 +            builder.build_parallel().run(|| {
 +                let results_clone = Arc::clone(&results);
 +                let include_patterns = self.options.include.clone().unwrap_or_default();
@@ -289,7 +357,6 @@ index 94db667a6..3112373c5 100644
 +                                let path_for_patterns =
 +                                    crate::pattern::path_for_patterns(path, &root_path);
 +
-+                                // Check if file matches any include pattern
 +                                let should_include = include_patterns.is_empty()
 +                                    || crate::pattern::matches_any_pattern(
 +                                        path_for_patterns.as_ref(),
@@ -297,7 +364,6 @@ index 94db667a6..3112373c5 100644
 +                                    );
 +
 +                                if should_include {
-+                                    // Check if file should be excluded
 +                                    let should_exclude = crate::pattern::matches_any_pattern(
 +                                        path_for_patterns.as_ref(),
 +                                        &exclude_patterns,
@@ -339,13 +405,18 @@ index 94db667a6..3112373c5 100644
 +            Ok(results)
 +        }
      }
- }
  
+     /// Walk the browser-backed virtual filesystem and return matching file paths.
+-    #[cfg(target_family = "wasm")]
++    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+     pub async fn walk(self) -> Result<Vec<PathBuf>, crate::Error> {
+         let root_path = self.root;
+         if !tombi_fs::is_file(&root_path) && !tombi_fs::is_dir(&root_path) {
 diff --git a/crates/tombi-schema-store/Cargo.toml b/crates/tombi-schema-store/Cargo.toml
-index 5e23b8824..0cef4dd04 100644
+index cd11b3e2c..9ed212880 100644
 --- a/crates/tombi-schema-store/Cargo.toml
 +++ b/crates/tombi-schema-store/Cargo.toml
-@@ -13,11 +13,10 @@ glob.workspace = true
+@@ -13,7 +13,6 @@ glob.workspace = true
  gloo-net = { workspace = true, optional = true }
  itertools.workspace = true
  log.workspace = true
@@ -353,19 +424,10 @@ index 5e23b8824..0cef4dd04 100644
  serde.workspace = true
  serde_json.workspace = true
  thiserror.workspace = true
--tokio.workspace = true
-+tokio = { workspace = true, features = ["sync"] }
- tombi-accessor.workspace = true
- tombi-ast.workspace = true
- tombi-cache.workspace = true
-@@ -31,6 +30,13 @@ tombi-text.workspace = true
+@@ -33,6 +32,9 @@ tombi-text.workspace = true
  tombi-uri.workspace = true
  tombi-x-keyword.workspace = true
  
-+# reqwest pulls in tokio's networking stack, which does not build on wasm. The
-+# `reqwest01`/`native` feature can still be enabled on wasm (it propagates from
-+# the workspace defaults), but the dependency is only compiled off-wasm; the
-+# http_client module falls back to a stub on wasm regardless of the feature.
 +[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 +reqwest = { workspace = true, optional = true }
 +
@@ -373,78 +435,110 @@ index 5e23b8824..0cef4dd04 100644
  pretty_assertions.workspace = true
  reqwest = { workspace = true, features = ["blocking"] }
 diff --git a/crates/tombi-schema-store/src/http_client.rs b/crates/tombi-schema-store/src/http_client.rs
-index f4a4f3bdc..c0d1e27d4 100644
+index f77b33304..7cf33c104 100644
 --- a/crates/tombi-schema-store/src/http_client.rs
 +++ b/crates/tombi-schema-store/src/http_client.rs
-@@ -12,23 +12,48 @@ fn http_timeout_secs() -> u64 {
+@@ -21,14 +21,19 @@ fn http_timeout_secs() -> u64 {
          .unwrap_or(DEFAULT_HTTP_TIMEOUT)
  }
  
--#[cfg(feature = "reqwest01")]
-+// reqwest is only compiled off-wasm (see Cargo.toml), so the reqwest-backed
-+// client is gated on the target as well as the feature. On wasm the `reqwest01`
-+// feature may still be enabled by feature unification, but it must not select
-+// this client.
-+#[cfg(all(feature = "reqwest01", not(target_arch = "wasm32")))]
+-#[cfg(feature = "reqwest")]
++#[cfg(all(feature = "reqwest", not(target_arch = "wasm32")))]
  mod reqwest_client;
--#[cfg(feature = "reqwest01")]
-+#[cfg(all(feature = "reqwest01", not(target_arch = "wasm32")))]
- pub use reqwest_client::HttpClient;
+-#[cfg(feature = "reqwest")]
++#[cfg(all(feature = "reqwest", not(target_arch = "wasm32")))]
+ pub use reqwest_client::ReqwestHttpClient;
  
-+// WASI has no sockets; fetching is delegated to the host (see go-tombi). This
-+// takes precedence over the stub regardless of which features unification
-+// leaves enabled.
+-#[cfg(all(feature = "gloo-net", target_arch = "wasm32"))]
 +#[cfg(target_os = "wasi")]
 +mod wasi_host_client;
 +#[cfg(target_os = "wasi")]
-+pub use wasi_host_client::HttpClient;
++pub use wasi_host_client::WasiHostHttpClient;
 +
- #[cfg(feature = "gloo-net06")]
- #[allow(dead_code)]
++#[cfg(all(feature = "gloo-net", target_arch = "wasm32", not(target_os = "wasi")))]
  mod gloo_net_client;
--#[cfg(all(feature = "gloo-net06", not(feature = "reqwest01")))]
-+#[cfg(all(
-+    feature = "gloo-net06",
-+    not(target_os = "wasi"),
-+    not(all(feature = "reqwest01", not(target_arch = "wasm32")))
-+))]
- pub use gloo_net_client::HttpClient;
+-#[cfg(all(feature = "gloo-net", target_arch = "wasm32"))]
++#[cfg(all(feature = "gloo-net", target_arch = "wasm32", not(target_os = "wasi")))]
+ pub use gloo_net_client::GlooNetHttpClient;
  
--// Provide a stub when no features are enabled
--#[cfg(not(any(feature = "reqwest01", feature = "gloo-net06")))]
-+// Provide a stub when no usable client is selected, e.g. a browser wasm build
-+// with no networking feature enabled.
+ #[cfg(all(
+@@ -38,36 +43,52 @@ pub use gloo_net_client::GlooNetHttpClient;
+ ))]
+ compile_error!("the gloo-net HTTP client is only available on wasm32 targets");
+ 
+-#[cfg(all(
+-    feature = "reqwest",
+-    not(all(target_arch = "wasm32", feature = "gloo-net"))
+-))]
++#[cfg(all(feature = "reqwest", not(target_arch = "wasm32")))]
+ pub type DefaultHttpClient = ReqwestHttpClient;
+ 
+-#[cfg(all(feature = "gloo-net", target_arch = "wasm32"))]
++#[cfg(all(feature = "gloo-net", target_arch = "wasm32", not(target_os = "wasi")))]
+ pub type DefaultHttpClient = GlooNetHttpClient;
+ 
++#[cfg(target_os = "wasi")]
++pub type DefaultHttpClient = WasiHostHttpClient;
++
+ // Provide a stub when no built-in client feature is enabled. This keeps the
+ // trait usable for callers that inject their own client.
+-#[cfg(not(any(feature = "reqwest", all(feature = "gloo-net", target_arch = "wasm32"))))]
 +#[cfg(not(any(
-+    all(feature = "reqwest01", not(target_arch = "wasm32")),
-+    target_os = "wasi",
-+    feature = "gloo-net06"
++    all(feature = "reqwest", not(target_arch = "wasm32")),
++    all(feature = "gloo-net", target_arch = "wasm32", not(target_os = "wasi")),
++    target_os = "wasi"
 +)))]
  #[derive(Debug, Clone)]
- pub struct HttpClient;
+ pub struct DefaultHttpClient;
  
--#[cfg(not(any(feature = "reqwest01", feature = "gloo-net06")))]
+-#[cfg(not(any(feature = "reqwest", all(feature = "gloo-net", target_arch = "wasm32"))))]
 +#[cfg(not(any(
-+    all(feature = "reqwest01", not(target_arch = "wasm32")),
-+    target_os = "wasi",
-+    feature = "gloo-net06"
++    all(feature = "reqwest", not(target_arch = "wasm32")),
++    all(feature = "gloo-net", target_arch = "wasm32", not(target_os = "wasi")),
++    target_os = "wasi"
 +)))]
- impl HttpClient {
+ impl Default for DefaultHttpClient {
+     fn default() -> Self {
+         Self::new()
+     }
+ }
+ 
+-#[cfg(not(any(feature = "reqwest", all(feature = "gloo-net", target_arch = "wasm32"))))]
++#[cfg(not(any(
++    all(feature = "reqwest", not(target_arch = "wasm32")),
++    all(feature = "gloo-net", target_arch = "wasm32", not(target_os = "wasi")),
++    target_os = "wasi"
++)))]
+ impl DefaultHttpClient {
      pub fn new() -> Self {
          Self
+     }
+ }
+ 
+-#[cfg(not(any(feature = "reqwest", all(feature = "gloo-net", target_arch = "wasm32"))))]
++#[cfg(not(any(
++    all(feature = "reqwest", not(target_arch = "wasm32")),
++    all(feature = "gloo-net", target_arch = "wasm32", not(target_os = "wasi")),
++    target_os = "wasi"
++)))]
+ impl HttpClient for DefaultHttpClient {
+     fn get_bytes<'a>(&'a self, _url: &'a str) -> HttpFuture<'a, Result<Bytes, FetchError>> {
+         use tombi_future::Boxable;
 diff --git a/crates/tombi-schema-store/src/http_client/wasi_host_client.rs b/crates/tombi-schema-store/src/http_client/wasi_host_client.rs
 new file mode 100644
-index 000000000..929d37fb8
+index 000000000..803f2d5f5
 --- /dev/null
 +++ b/crates/tombi-schema-store/src/http_client/wasi_host_client.rs
-@@ -0,0 +1,73 @@
-+use crate::http_client::error::FetchError;
+@@ -0,0 +1,75 @@
 +use bytes::Bytes;
++use tombi_future::Boxable;
++
++use crate::http_client::{FetchError, HttpClient, HttpFuture};
 +
 +// WASI has no sockets, so schema fetching is delegated to the host through the
 +// "tombi" import module. The host writes the response body into guest memory it
-+// allocates via the exported `tombi_wasm_alloc`, returning the pointer/length
-+// through the out-params and the HTTP status as the result (0 = transport
-+// error).
++// allocates via the exported `tombi_wasm_alloc`, returning the pointer and
++// length through the out-parameters and the HTTP status as the result.
 +mod host {
 +    #[link(wasm_import_module = "tombi")]
 +    unsafe extern "C" {
@@ -457,181 +551,94 @@ index 000000000..929d37fb8
 +    }
 +}
 +
-+#[derive(Debug, Clone)]
-+pub struct HttpClient;
++#[derive(Debug, Clone, Default)]
++pub struct WasiHostHttpClient;
 +
-+impl Default for HttpClient {
-+    fn default() -> Self {
-+        Self::new()
-+    }
-+}
-+
-+impl HttpClient {
++impl WasiHostHttpClient {
 +    pub fn new() -> Self {
 +        Self
 +    }
++}
 +
-+    pub async fn get_bytes(&self, url: &str) -> Result<Bytes, FetchError> {
-+        let mut out_ptr: usize = 0;
-+        let mut out_len: usize = 0;
-+        let status =
-+            unsafe { host::fetch_schema(url.as_ptr(), url.len(), &mut out_ptr, &mut out_len) };
++impl HttpClient for WasiHostHttpClient {
++    fn get_bytes<'a>(&'a self, url: &'a str) -> HttpFuture<'a, Result<Bytes, FetchError>> {
++        async move {
++            let mut out_ptr = 0;
++            let mut out_len = 0;
++            // SAFETY: the pointers reference live locals and the URL remains
++            // valid for the duration of the synchronous host call.
++            let status =
++                unsafe { host::fetch_schema(url.as_ptr(), url.len(), &mut out_ptr, &mut out_len) };
 +
-+        let body = read_host_bytes(out_ptr, out_len);
++            let body = read_host_bytes(out_ptr, out_len);
 +
-+        if status == 0 {
-+            return Err(FetchError::FetchFailed {
-+                reason: "host fetch transport error".to_string(),
-+            });
++            if status == 0 {
++                return Err(FetchError::FetchFailed {
++                    reason: "host fetch transport error".to_string(),
++                });
++            }
++            if !(200..300).contains(&status) {
++                return Err(FetchError::StatusNotOk {
++                    status: status as u16,
++                });
++            }
++
++            Ok(Bytes::from(body))
 +        }
-+        if !(200..300).contains(&status) {
-+            return Err(FetchError::StatusNotOk {
-+                status: status as u16,
-+            });
-+        }
-+
-+        Ok(Bytes::from(body))
++        .boxed()
 +    }
 +}
 +
-+/// Copies a host-allocated `[ptr, len)` byte range into an owned buffer and
-+/// frees the allocation made by `tombi_wasm_alloc` (align 1).
++/// Copies a host-allocated byte range into an owned buffer, then frees the
++/// allocation made by `tombi_wasm_alloc` with the same alignment.
 +fn read_host_bytes(ptr: usize, len: usize) -> Vec<u8> {
 +    if ptr == 0 || len == 0 {
 +        return Vec::new();
 +    }
-+    // SAFETY: the host allocated [ptr, len) via tombi_wasm_alloc (align 1).
++    // SAFETY: the host allocated [ptr, ptr + len) via tombi_wasm_alloc.
 +    unsafe {
-+        let buf = std::slice::from_raw_parts(ptr as *const u8, len).to_vec();
++        let bytes = std::slice::from_raw_parts(ptr as *const u8, len).to_vec();
 +        std::alloc::dealloc(
 +            ptr as *mut u8,
 +            std::alloc::Layout::from_size_align_unchecked(len, 1),
 +        );
-+        buf
++        bytes
 +    }
 +}
-diff --git a/crates/tombi-schema-store/src/store.rs b/crates/tombi-schema-store/src/store.rs
-index fb877492f..ff2d23fb2 100644
---- a/crates/tombi-schema-store/src/store.rs
-+++ b/crates/tombi-schema-store/src/store.rs
-@@ -1078,7 +1078,11 @@ async fn schema_cache_version(schema_uri: &SchemaUri) -> Option<SchemaCacheVersi
-         _ => None,
-     }?;
- 
-+    // tokio::fs is unavailable on wasm; std::fs is the fallback there.
-+    #[cfg(not(target_arch = "wasm32"))]
-     let metadata = tokio::fs::metadata(path).await.ok()?;
-+    #[cfg(target_arch = "wasm32")]
-+    let metadata = std::fs::metadata(path).ok()?;
-     let modified = metadata.modified().ok()?;
-     let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
- 
-diff --git a/crates/tombi-text/Cargo.toml b/crates/tombi-text/Cargo.toml
-index efffeb41d..bc2c07a21 100644
---- a/crates/tombi-text/Cargo.toml
-+++ b/crates/tombi-text/Cargo.toml
-@@ -8,10 +8,15 @@ license.workspace = true
- [dependencies]
- log.workspace = true
- serde = { workspace = true, optional = true }
--tower-lsp = { workspace = true, optional = true }
- unicode-segmentation.workspace = true
- wasm-bindgen = { workspace = true, optional = true }
- 
-+# tower-lsp drags in tokio's networking stack, which does not build on wasm.
-+# The `lsp` feature can still be enabled on wasm (it propagates from workspace
-+# defaults), but the dependency and the conversions that use it are off-wasm.
-+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-+tower-lsp = { workspace = true, optional = true }
-+
- [dev-dependencies]
- pretty_assertions.workspace = true
- rstest.workspace = true
-diff --git a/crates/tombi-text/src/features.rs b/crates/tombi-text/src/features.rs
-index a6d4a03c6..590d3bdfb 100644
---- a/crates/tombi-text/src/features.rs
-+++ b/crates/tombi-text/src/features.rs
-@@ -1,2 +1,3 @@
--#[cfg(feature = "lsp")]
-+// The lsp conversions depend on tower-lsp, which is unavailable on wasm.
-+#[cfg(all(feature = "lsp", not(target_arch = "wasm32")))]
- pub mod lsp;
-diff --git a/crates/tombi-text/src/lib.rs b/crates/tombi-text/src/lib.rs
-index 108d6af56..28f658fa8 100644
---- a/crates/tombi-text/src/lib.rs
-+++ b/crates/tombi-text/src/lib.rs
-@@ -41,13 +41,13 @@ pub use crate::{
-     span::Span,
- };
- 
--#[cfg(feature = "lsp")]
-+#[cfg(all(feature = "lsp", not(target_arch = "wasm32")))]
- pub use crate::features::lsp::{EncodingKind, FromLsp, IntoLsp, LineIndex};
- 
- #[cfg(target_pointer_width = "16")]
- compile_error!("'text' crate assumes usize >= u32 and does not work on 16-bit targets");
- 
--#[cfg(feature = "lsp")]
-+#[cfg(all(feature = "lsp", not(target_arch = "wasm32")))]
- #[inline]
- /// Converts a `Range` to a `tower_lsp::lsp_types::Range`.
- ///
-diff --git a/rust/serde_tombi/src/ser.rs b/rust/serde_tombi/src/ser.rs
-index 60bb2bb6c..1f155e1e3 100644
---- a/rust/serde_tombi/src/ser.rs
-+++ b/rust/serde_tombi/src/ser.rs
-@@ -102,7 +102,13 @@ impl Serializer<'_> {
-     where
-         T: Serialize,
-     {
--        tokio::runtime::Runtime::new()?.block_on(self.to_string_async(value))
-+        // wasm only supports the current-thread runtime (no `rt-multi-thread`),
-+        // which is what `Runtime::new()` builds off-wasm.
-+        #[cfg(not(target_arch = "wasm32"))]
-+        let runtime = tokio::runtime::Runtime::new()?;
-+        #[cfg(target_arch = "wasm32")]
-+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-+        runtime.block_on(self.to_string_async(value))
-     }
- 
-     pub async fn to_string_async<T>(&self, value: &T) -> Result<String, crate::ser::Error>
 diff --git a/rust/tombi-cli/Cargo.toml b/rust/tombi-cli/Cargo.toml
-index 1035a9098..307104e8c 100644
+index f9b5cc64e..ef51ce3fd 100644
 --- a/rust/tombi-cli/Cargo.toml
 +++ b/rust/tombi-cli/Cargo.toml
 @@ -21,7 +21,6 @@ nu-ansi-term.workspace = true
  serde_tombi.workspace = true
  similar = { workspace = true, features = ["inline"] }
  thiserror.workspace = true
--tokio.workspace = true
+-tokio = { workspace = true, features = ["io-std", "macros", "rt", "sync"] }
  tombi-cache.workspace = true
  tombi-cli-options.workspace = true
  tombi-config.workspace = true
-@@ -29,9 +28,21 @@ tombi-diagnostic.workspace = true
+@@ -29,11 +28,18 @@ tombi-diagnostic.workspace = true
  tombi-formatter.workspace = true
  tombi-glob.workspace = true
  tombi-linter.workspace = true
--tombi-lsp = { workspace = true, features = ["clap", "native"] }
+-tombi-lsp.workspace = true
  tombi-schema-store = { workspace = true, features = ["native"] }
- 
-+# The language server depends on the multi-threaded tokio runtime, tower-lsp,
-+# and reqwest, none of which build on wasm. The `lsp` subcommand is compiled
-+# out on wasm (see app/command.rs), so the dependency is off-wasm only.
++
 +[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-+tokio.workspace = true
-+tombi-lsp = { workspace = true, features = ["clap", "native"] }
-+
-+# On wasm only tokio's wasm-supported features are available. The format/lint
-+# commands drive the async formatter on a current-thread runtime and use
-+# std::fs directly instead of tokio::fs.
++tokio = { workspace = true, features = ["io-std", "macros", "rt", "sync"] }
++tombi-lsp.workspace = true
+ tower.workspace = true
+ tower-lsp = { workspace = true, features = ["runtime-tokio"] }
+ 
 +[target.'cfg(target_arch = "wasm32")'.dependencies]
-+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
++serde_tombi = { workspace = true, features = ["wasm"] }
++tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 +
- [build-dependencies]
- tombi-regex.workspace = true
+ [dev-dependencies]
+ tokio = { workspace = true, features = ["io-util", "time"] }
  
 diff --git a/rust/tombi-cli/src/app.rs b/rust/tombi-cli/src/app.rs
-index e00bb8922..c90d7bdae 100644
+index e00bb8922..cdf50ce74 100644
 --- a/rust/tombi-cli/src/app.rs
 +++ b/rust/tombi-cli/src/app.rs
 @@ -66,6 +66,7 @@ pub fn run(args: impl Into<Args>) -> Result<(), crate::Error> {
@@ -642,41 +649,19 @@ index e00bb8922..c90d7bdae 100644
          command::TomlCommand::Lsp(args) => command::lsp::run(args),
          command::TomlCommand::Completion(args) => command::completion::run(args),
      }
-@@ -141,3 +142,20 @@ fn printer() -> tombi_diagnostic::printer::Pretty {
-         use_ansi_color: use_ansi_color(),
-     }
- }
-+
-+/// Build the tokio runtime used to drive the async formatter/linter.
-+///
-+/// wasm only supports the current-thread runtime (no `rt-multi-thread`), and
-+/// its IO/time drivers cannot be enabled, so the builder differs by target.
-+pub(crate) fn build_runtime() -> std::io::Result<tokio::runtime::Runtime> {
-+    #[cfg(not(target_arch = "wasm32"))]
-+    {
-+        tokio::runtime::Builder::new_multi_thread()
-+            .enable_all()
-+            .build()
-+    }
-+    #[cfg(target_arch = "wasm32")]
-+    {
-+        tokio::runtime::Builder::new_current_thread().build()
-+    }
-+}
 diff --git a/rust/tombi-cli/src/app/command.rs b/rust/tombi-cli/src/app/command.rs
-index b2ec49c42..abb7bd677 100644
+index 82be18bd2..739303d29 100644
 --- a/rust/tombi-cli/src/app/command.rs
 +++ b/rust/tombi-cli/src/app/command.rs
-@@ -1,6 +1,8 @@
+@@ -1,6 +1,7 @@
  pub mod completion;
  pub mod format;
  pub mod lint;
-+// The language server is not available on wasm (see tombi-cli/Cargo.toml).
 +#[cfg(not(target_arch = "wasm32"))]
  pub mod lsp;
  
  #[derive(clap::Subcommand)]
-@@ -11,6 +13,7 @@ pub enum TomlCommand {
+@@ -11,6 +12,7 @@ pub enum TomlCommand {
      #[command(alias = "check")]
      Lint(lint::Args),
  
@@ -684,8 +669,28 @@ index b2ec49c42..abb7bd677 100644
      #[command(alias = "serve")]
      Lsp(lsp::Args),
  
+@@ -23,6 +25,7 @@ pub(super) fn max_concurrency() -> usize {
+         .unwrap_or(1)
+ }
+ 
++#[cfg(not(target_arch = "wasm32"))]
+ pub(super) fn runtime(single_threaded: bool) -> std::io::Result<tokio::runtime::Runtime> {
+     let mut builder = if single_threaded {
+         tokio::runtime::Builder::new_current_thread()
+@@ -32,6 +35,11 @@ pub(super) fn runtime(single_threaded: bool) -> std::io::Result<tokio::runtime::
+     builder.enable_all().build()
+ }
+ 
++#[cfg(target_arch = "wasm32")]
++pub(super) fn runtime(_single_threaded: bool) -> std::io::Result<tokio::runtime::Runtime> {
++    tokio::runtime::Builder::new_current_thread().build()
++}
++
+ pub(super) fn file_open_error(
+     source_path: std::path::PathBuf,
+     error: std::io::Error,
 diff --git a/rust/tombi-cli/src/app/command/format.rs b/rust/tombi-cli/src/app/command/format.rs
-index 928b13465..4455b76d6 100644
+index 1f8cafece..018544278 100644
 --- a/rust/tombi-cli/src/app/command/format.rs
 +++ b/rust/tombi-cli/src/app/command/format.rs
 @@ -1,6 +1,7 @@
@@ -696,25 +701,8 @@ index 928b13465..4455b76d6 100644
  use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
  use tombi_config::{FormatOptions, TomlVersion};
  use tombi_diagnostic::{Diagnostic, Print};
-@@ -133,10 +134,7 @@ where
-             }),
-         });
+@@ -446,33 +447,45 @@ fn eprint_diff(source: &str, formatted: &str) {
  
--    let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
--        .enable_all()
--        .build()
--    else {
-+    let Ok(runtime) = crate::app::build_runtime() else {
-         log::error!("Failed to create tokio runtime");
-         std::process::exit(1);
-     };
-@@ -448,35 +446,50 @@ fn eprint_diff(source: &str, formatted: &str) {
-     }
- }
- 
-+// File handles differ by target: tokio's async fs/io off-wasm, std's blocking
-+// fs/io on wasm (where tokio's `fs`/`io-std` features are unavailable). The
-+// async method signatures are kept identical so the call sites do not branch.
  enum FormatFile {
      Stdin {
 -        stdin: tokio::io::Stdin,
@@ -770,7 +758,7 @@ index 928b13465..4455b76d6 100644
          })
      }
  
-@@ -492,23 +505,72 @@ impl FormatFile {
+@@ -488,23 +501,72 @@ impl FormatFile {
          match self {
              Self::Stdin { .. } => Ok(()),
              Self::File { file, .. } => {
@@ -850,7 +838,7 @@ index 928b13465..4455b76d6 100644
      }
  }
 diff --git a/rust/tombi-cli/src/app/command/lint.rs b/rust/tombi-cli/src/app/command/lint.rs
-index ea25e5c49..adbe9b070 100644
+index 7f7228c7e..9babd5f92 100644
 --- a/rust/tombi-cli/src/app/command/lint.rs
 +++ b/rust/tombi-cli/src/app/command/lint.rs
 @@ -1,3 +1,4 @@
@@ -858,19 +846,7 @@ index ea25e5c49..adbe9b070 100644
  use tokio::io::AsyncReadExt;
  use tombi_config::{LintOptions, TomlVersion};
  use tombi_diagnostic::{Diagnostic, Print};
-@@ -110,10 +111,7 @@ where
-             }),
-         });
- 
--    let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
--        .enable_all()
--        .build()
--    else {
-+    let Ok(runtime) = crate::app::build_runtime() else {
-         log::error!("Failed to create tokio runtime");
-         std::process::exit(1);
-     };
-@@ -143,17 +141,27 @@ where
+@@ -163,17 +164,27 @@ where
                      return Ok(summary);
                  };
  
@@ -909,58 +885,33 @@ index ea25e5c49..adbe9b070 100644
                      summary.success_num += 1;
                  } else {
                      summary.error_num += 1;
-@@ -178,22 +186,32 @@ where
-                                 continue;
-                             };
+@@ -209,13 +220,19 @@ where
+                             let schema_store = schema_store.clone();
  
--                            match tokio::fs::File::open(&source_path).await {
-+                            #[cfg(not(target_arch = "wasm32"))]
-+                            let opened = tokio::fs::File::open(&source_path).await;
-+                            #[cfg(target_arch = "wasm32")]
-+                            let opened = std::fs::File::open(&source_path);
-+
-+                            match opened {
-                                 Ok(file) => {
-                                     let printer = printer.clone();
-                                     let schema_store = schema_store.clone();
+                             tasks.spawn(async move {
++                                #[cfg(not(target_arch = "wasm32"))]
+                                 let file =
+                                     tokio::fs::File::open(&source_path).await.map_err(|error| {
+                                         super::file_open_error(source_path.clone(), error)
+                                     })?;
++                                #[cfg(target_arch = "wasm32")]
++                                let file = std::fs::File::open(&source_path).map_err(|error| {
++                                    super::file_open_error(source_path.clone(), error)
++                                })?;
++                                let source = read_source(file).await.map_err(crate::Error::Io)?;
  
-                                     tasks.spawn(async move {
--                                        lint_file(
--                                            file,
--                                            printer,
--                                            Some(source_path.as_ref()),
--                                            toml_version,
--                                            &lint_options,
--                                            &schema_store,
--                                            args.error_on_warnings,
--                                        )
--                                        .await
-+                                        match read_source(file).await {
-+                                            Ok(source) => {
-+                                                lint_file(
-+                                                    source,
-+                                                    printer,
-+                                                    Some(source_path.as_ref()),
-+                                                    toml_version,
-+                                                    &lint_options,
-+                                                    &schema_store,
-+                                                    args.error_on_warnings,
-+                                                )
-+                                                .await
-+                                            }
-+                                            Err(_) => false,
-+                                        }
-                                     });
-                                 }
-                                 Err(err) => {
-@@ -246,8 +264,24 @@ where
+                                 Ok(lint_file(
+-                                    file,
++                                    source,
+                                     printer,
+                                     Some(source_path.as_ref()),
+                                     toml_version,
+@@ -251,8 +268,22 @@ where
      })
  }
  
 -async fn lint_file<R, P>(
 -    mut reader: R,
-+// Read the full source from a reader. tokio's async readers are used off-wasm;
-+// std's blocking readers on wasm (where tokio's io features are unavailable).
 +#[cfg(not(target_arch = "wasm32"))]
 +async fn read_source(mut reader: impl AsyncReadExt + Unpin + Send) -> std::io::Result<String> {
 +    let mut source = String::new();
@@ -980,7 +931,7 @@ index ea25e5c49..adbe9b070 100644
      mut printer: P,
      source_path: Option<&std::path::Path>,
      toml_version: TomlVersion,
-@@ -259,12 +293,7 @@ where
+@@ -264,12 +295,7 @@ where
      Diagnostic: Print<P>,
      crate::Error: Print<P>,
      P: Send,
@@ -994,23 +945,21 @@ index ea25e5c49..adbe9b070 100644
          toml_version,
          lint_options,
 diff --git a/rust/tombi-cli/src/main.rs b/rust/tombi-cli/src/main.rs
-index f4d3e4bcb..89513ff1f 100644
+index f4d3e4bcb..1acfd9f94 100644
 --- a/rust/tombi-cli/src/main.rs
 +++ b/rust/tombi-cli/src/main.rs
-@@ -3,6 +3,19 @@ mod error;
+@@ -3,6 +3,17 @@ mod error;
  
  pub use error::Error;
  
-+/// Allocates `len` bytes in guest linear memory for the WASI host to fill
-+/// (e.g. with a fetched JSON Schema). The guest takes ownership of the buffer
-+/// and frees it after reading. See `tombi-schema-store`'s WASI http client.
++/// Allocates guest memory for data returned by the go-tombi host.
 +#[cfg(target_os = "wasi")]
 +#[unsafe(no_mangle)]
 +pub extern "C" fn tombi_wasm_alloc(len: usize) -> *mut u8 {
 +    if len == 0 {
 +        return std::ptr::NonNull::<u8>::dangling().as_ptr();
 +    }
-+    // SAFETY: len > 0, and align 1 is always valid for u8.
++    // SAFETY: len is non-zero and alignment 1 is valid for u8.
 +    unsafe { std::alloc::alloc(std::alloc::Layout::from_size_align_unchecked(len, 1)) }
 +}
 +
