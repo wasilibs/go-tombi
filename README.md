@@ -12,13 +12,13 @@ Precompiled binaries are available in the [releases](https://github.com/wasilibs
 Alternatively, install the plugin you want using `go install`.
 
 ```bash
-$ go install github.com/wasilibs/go-tombi/cmd/tombi@latest
+go install github.com/wasilibs/go-tombi/cmd/tombi@latest
 ```
 
 To avoid installation entirely, it can be convenient to use `go run`
 
 ```bash
-$ go run github.com/wasilibs/go-tombi/cmd/tombi@latest format .
+go run github.com/wasilibs/go-tombi/cmd/tombi@latest format .
 ```
 
 Note that due to the sandboxing of the filesystem when using Wasm, currently only files that descend
