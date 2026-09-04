@@ -1,7 +1,7 @@
 # go-tombi
 
-go-tombi is a distribution of [tombi][1], that can be built with Go. It does not actually reimplement any
-functionality of tombi in Go, instead building it into a WebAssembly binary, and
+go-tombi is a distribution of [tombi][1], that can be built with Go. It does not actually reimplement
+any functionality of tombi in Go, instead building it into a WebAssembly binary, and
 executing with the pure Go Wasm runtime [wazero][2]. This means that `go install` or `go run`
 can be used to execute it, with no need to rely on separate package managers such as cargo,
 on any platform that Go supports.
